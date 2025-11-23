@@ -194,6 +194,9 @@ def _create_protein_pairs(x_test_encoded, row_names, correlation_type="pearson")
 def _pairs_after_cutoff(correlation, interaction_count=100000, CC_cutoff=None):
     """
     Filter protein pairs based on correlation scores and cutoffs.
+    
+    Removes duplicate pairs in both directions (AB-BA) before applying filters.
+    For duplicate pairs, keeps the one with the higher score.
 
     Parameters
     ----------
@@ -207,15 +210,30 @@ def _pairs_after_cutoff(correlation, interaction_count=100000, CC_cutoff=None):
     Returns
     -------
     correlation_df_new : pd.DataFrame
-        Filtered DataFrame with selected protein pairs.
+        Filtered DataFrame with selected protein pairs (no duplicate directions).
     """
+    # Remove duplicate pairs in both directions (AB-BA)
+    # Sort by score descending, then keep first occurrence of each canonical pair
+    correlation_sorted = correlation.sort_values("Score", ascending=False)
+    
+    # Create canonical pairs (sorted tuple so AB == BA)
+    canonical = correlation_sorted.apply(
+        lambda row: tuple(sorted([row["Protein_1"], row["Protein_2"]])), axis=1
+    )
+    
+    # Drop duplicates keeping first (highest score)
+    correlation_dedup = correlation_sorted[~canonical.duplicated(keep="first")]
+    
+    # Apply cutoff or count filter
     if CC_cutoff is not None and isinstance(CC_cutoff, (int, float)):
         logging.info(f" A cut-off of {CC_cutoff} is applied.")
-        correlation_df_new = correlation.loc[(correlation["Score"] >= CC_cutoff)]
+        correlation_df_new = correlation_dedup.loc[(correlation_dedup["Score"] >= CC_cutoff)]
     else:
-        correlation_df_new = correlation.iloc[:interaction_count, :]
+        correlation_df_new = correlation_dedup.iloc[:interaction_count, :]
         logging.warning(
-            f" The number of interactions in the output file is {interaction_count} in which both directions are included: proteinA - proteinB and proteinB - proteinA."
+            f" The number of interactions in the output file is {interaction_count} (duplicate directions removed)."
         )
-    return correlation_df_new
+    
+    # Reset index to sequential 0, 1, 2, ...
+    return correlation_df_new.reset_index(drop=True)
 
