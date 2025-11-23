@@ -2,7 +2,6 @@
 
 import tensorflow as tf
 from tensorflow.keras import layers
-from tensorflow.keras import losses
 from tensorflow.keras import backend as K
 
 
@@ -74,7 +73,7 @@ class VAE(tf.keras.Model):
         vae = tf.keras.Model(inputs, outputs, name="vae_mlp")
 
         # loss
-        reconstruction_loss = losses.MeanSquaredError(reduction='none')(inputs, outputs)
+        reconstruction_loss = K.mean(K.square(inputs - outputs), axis=-1)
         reconstruction_loss *= original_dim
         kl_loss = 1 + z_log_sigma - K.square(z_mean) - K.exp(z_log_sigma)
         kl_loss = K.sum(kl_loss, axis=-1)
