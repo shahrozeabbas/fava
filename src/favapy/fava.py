@@ -4,14 +4,18 @@ import warnings
 
 warnings.filterwarnings("ignore")
 
-import anndata
 import tensorflow as tf
-from tensorflow import keras
 import numpy as np
 import pandas as pd
-import time
-from tensorflow.keras import layers
-from tensorflow.keras import backend as K
+
+from .models import VAE
+from .utils import (
+    _preprocess_expression,
+    _extract_data,
+    _load_data,
+    _create_protein_pairs,
+    _pairs_after_cutoff,
+)
 
 
 # Configure TensorFlow threading
@@ -89,217 +93,6 @@ def argument_parser():
     return args
 
 
-def _load_data(input_file, data_type):
-    """
-    Loads and preprocesses data from a file.
-
-    Parameters
-    ----------
-    input_file : str
-        Path to the input file.
-    data_type : str
-        Type of the data file ('tsv' or 'csv').
-
-    Returns
-    -------
-    expr : np.ndarray
-        Processed data array.
-    row_names : list
-        List of row names corresponding to the data.
-    """
-    row_names = []
-    array = []
-    with open(input_file, "r", encoding="utf-8") as infile:
-        next(infile)
-        for line in infile:
-            if data_type == "tsv":
-                line = line.split("\t")
-            else:
-                line = line.split(",")
-            row_names.append(line[0])
-            array.append(line[1:])
-
-    expr = np.asarray(array, dtype=np.float32)
-
-    if np.all(expr >= 0):
-        expr = np.log2(1 + expr[:])
-    else:
-        logging.warning(
-            " Negative values are detected, so log2 normalization is not applied."
-        )
-
-    constant = 1e-8  # small constant to avoid division by zero
-    expr = (expr - np.min(expr, axis=1, keepdims=True)) / (
-        np.max(expr, axis=1, keepdims=True)
-        - np.min(expr, axis=1, keepdims=True)
-        + constant
-    )
-    expr = np.nan_to_num(expr)
-    return expr, row_names
-
-
-class VAE(tf.keras.Model):
-    """
-    Variational Autoencoder model class.
-
-    Parameters
-    ----------
-    opt : tf.keras.optimizers.Optimizer
-        Optimizer for the model.
-    x_train : np.ndarray
-        Training data.
-    x_test : np.ndarray
-        Test data.
-    batch_size : int
-        Batch size for training.
-    original_dim : int
-        Dimension of the input data.
-    hidden_layer : int
-        Number of units in the hidden layer.
-    latent_dim : int
-        Dimension of the latent space.
-    epochs : int
-        Number of training epochs.
-    """
-
-    def __init__(
-        self,
-        opt,
-        x_train,
-        x_test,
-        batch_size,
-        original_dim,
-        hidden_layer,
-        latent_dim,
-        epochs,
-    ):
-        super(VAE, self).__init__()
-        inputs = tf.keras.Input(shape=(original_dim,))
-        h = layers.Dense(hidden_layer, activation="relu")(inputs)
-
-        z_mean = layers.Dense(latent_dim)(h)
-        z_log_sigma = layers.Dense(latent_dim)(h)
-
-        # Sampling
-        def sampling(args):
-            z_mean, z_log_sigma = args
-            epsilon = K.random_normal(
-                shape=(K.shape(z_mean)[0], latent_dim), mean=0.0, stddev=0.1
-            )
-            return z_mean + K.exp(z_log_sigma) * epsilon
-
-        z = layers.Lambda(sampling, output_shape=(latent_dim,))([z_mean, z_log_sigma])
-
-        # Create encoder
-        encoder = tf.keras.Model(inputs, [z_mean, z_log_sigma, z], name="encoder")
-        self.encoder = encoder
-        # Create decoder
-        latent_inputs = tf.keras.Input(shape=(latent_dim,), name="z_sampling")
-        x = layers.Dense(hidden_layer, activation="relu")(latent_inputs)
-
-        outputs = layers.Dense(original_dim, activation="sigmoid")(x)
-        decoder = tf.keras.Model(latent_inputs, outputs, name="decoder")
-        self.decoder = decoder
-
-        # instantiate VAE model
-        outputs = decoder(encoder(inputs)[2])
-        vae = tf.keras.Model(inputs, outputs, name="vae_mlp")
-
-        # loss
-        reconstruction_loss = tf.keras.losses.mean_squared_error(inputs, outputs)
-        reconstruction_loss *= original_dim
-        kl_loss = 1 + z_log_sigma - K.square(z_mean) - K.exp(z_log_sigma)
-        kl_loss = K.sum(kl_loss, axis=-1)
-        kl_loss *= -0.5
-        vae_loss = K.mean(0.9 * (reconstruction_loss) + 0.1 * (kl_loss))
-        vae.add_loss(vae_loss)
-
-        vae.compile(optimizer=opt, loss="mean_squared_error", metrics=["accuracy"])
-        vae.fit(
-            x_train,
-            x_train,
-            batch_size=batch_size,
-            epochs=epochs,
-            validation_data=(x_test, x_test),
-        )
-
-
-
-
-def _create_protein_pairs(x_test_encoded, row_names, correlation_type="pearson"):
-    """
-    Create pairs of proteins based on their encoded latent spaces.
-
-    FAVA uses ALL THREE VAE encoder outputs (z_mean, z_log_sigma, z) concatenated
-    to create a richer representation for correlation analysis. This captures:
-    - z_mean: Mean latent embedding
-    - z_log_sigma: Uncertainty/variance in latent space
-    - z: Stochastic sample from the distribution
-
-    Parameters
-    ----------
-    x_test_encoded : np.ndarray
-        Encoded latent spaces with shape (3, n_samples, latent_dim)
-        where dim 0 contains [z_mean, z_log_sigma, z]
-    row_names : list
-        List of row names corresponding to the data.
-    correlation_type : str
-        Type of correlation to use (Pearson or Spearman).
-
-    Returns
-    -------
-    correlation_df : pd.DataFrame
-        DataFrame containing protein pairs and correlation scores.
-    """
-    start_time = time.time()
-    
-    # Reshape from (3, n_samples, latent_dim) to (n_samples, 3*latent_dim)
-    # This concatenates z_mean, z_log_sigma, and z horizontally
-    n_outputs, n_samples, latent_dim = x_test_encoded.shape
-    x_concatenated = x_test_encoded.transpose(1, 0, 2).reshape(n_samples, -1)
-
-    # Correlation of the latent space: Pearson or Spearman
-    corr = pd.DataFrame(x_concatenated.T).corr(method=correlation_type)
-    corr.columns = corr.index = row_names
-
-    correlation_df = corr.stack().reset_index()
-
-    end_time = time.time()
-    total_time = end_time - start_time
-    logging.info(f"Total time taken: {total_time} seconds")
-    correlation_df.columns = ["Protein_1", "Protein_2", "Score"]
-    return correlation_df
-
-
-def _pairs_after_cutoff(correlation, interaction_count=100000, CC_cutoff=None):
-    """
-    Filter protein pairs based on correlation scores and cutoffs.
-
-    Parameters
-    ----------
-    correlation : pd.DataFrame
-        DataFrame containing protein pairs and correlation scores.
-    interaction_count : int, optional
-        Maximum number of interactions to include, by default 100000.
-    CC_cutoff : float, optional
-        Correlation Coefficient cutoff, by default None.
-
-    Returns
-    -------
-    correlation_df_new : pd.DataFrame
-        Filtered DataFrame with selected protein pairs.
-    """
-    if CC_cutoff is not None and isinstance(CC_cutoff, (int, float)):
-        logging.info(f" A cut-off of {CC_cutoff} is applied.")
-        correlation_df_new = correlation.loc[(correlation["Score"] >= CC_cutoff)]
-    else:
-        correlation_df_new = correlation.iloc[:interaction_count, :]
-        logging.warning(
-            f" The number of interactions in the output file is {interaction_count} in which both directions are included: proteinA - proteinB and proteinB - proteinA."
-        )
-    return correlation_df_new
-
-
 def cook(
     data,
     log2_normalization=True,
@@ -310,20 +103,23 @@ def cook(
     interaction_count=100000,
     correlation_type="pearson",
     CC_cutoff=None,
+    layer=None,
 ):
     """
     Preprocess data, train a Variational Autoencoder (VAE), and create filtered protein pairs.
 
     Parameters
     ----------
-    data : np.ndarray or anndata._core.anndata.AnnData
-        Input data or AnnData object.
+    data : anndata.AnnData or pd.DataFrame
+        Input data. Can be:
+        - AnnData object with genes in var and cells in obs
+        - pandas DataFrame with genes as index (rows), cells as columns
     log2_normalization : bool, optional
-        Whether to apply log2 normalization, by default True.
+        Whether to apply log2 normalization and min-max scaling, by default True.
     hidden_layer : int, optional
-        Number of units in the hidden layer, by default None.
+        Number of units in the hidden layer, by default None (auto-determined).
     latent_dim : int, optional
-        Dimension of the latent space, by default None.
+        Dimension of the latent space, by default None (auto-determined).
     epochs : int, optional
         Number of training epochs, by default 50.
     batch_size : int, optional
@@ -331,138 +127,104 @@ def cook(
     interaction_count : int, optional
         Maximum number of interactions to include, by default 100000.
     correlation_type : str, optional
-        Type of correlation to use (Pearson or Spearman), by default Pearson.
+        Type of correlation to use ('pearson' or 'spearman'), by default 'pearson'.
     CC_cutoff : float, optional
         Correlation Coefficient cutoff, by default None.
+    layer : str, optional
+        For AnnData input, which layer to use. If None, uses X (default layer).
 
     Returns
     -------
     final_pairs : pd.DataFrame
         Filtered protein pairs based on correlation and cutoffs.
+    
+    Raises
+    ------
+    ValueError
+        If input type is not supported or data dimensions are invalid.
     """
-    if isinstance(data, anndata.AnnData):
-        # Convert sparse matrix to dense if needed, without mutating original
-        if hasattr(data.X, 'toarray'):
-            x = data.X.toarray().T
-        else:
-            x = np.asarray(data.X).T
-        data.var.index.name = None
-        row_names = data.var.index
-    else:
-        x = np.asarray(data, dtype=np.float32)
-        row_names = data.index
-
-    if np.any(x < 0):
-        log2_normalization = False
-        logging.warning(
-            " Negative values are detected or log2_normalization was set to False, so log2 normalization is not applied."
-        )
-
+    # Step 1: Extract matrix and gene names from input
+    x, row_names = _extract_data(data, layer=layer)
+    
+    # Step 2: Apply preprocessing if enabled
     if log2_normalization:
-        x = np.log2(1 + x[:])
-        logging.warning(" log2 normalization is applied.")
-
-    x = x / np.max(x, axis=1, keepdims=True)
-    x = np.nan_to_num(x)
-
+        x = _preprocess_expression(x)
+    
+    # Step 3: Determine architecture dimensions
     original_dim = x.shape[1]
+    
     if hidden_layer is None:
         if original_dim >= 2000:
             hidden_layer = 1000
-        if original_dim > 500 and original_dim < 2000:
+        elif original_dim >= 500:
             hidden_layer = 500
-        if original_dim <= 500:
-            hidden_layer = 50
-
+        else:
+            hidden_layer = max(50, original_dim // 2)
+    
     if latent_dim is None:
         if hidden_layer >= 1000:
             latent_dim = 100
-        if hidden_layer >= 500 and hidden_layer < 1000:
+        elif hidden_layer >= 500:
             latent_dim = 50
-        if hidden_layer <= 500:
-            latent_dim = 5
-
+        else:
+            latent_dim = max(5, hidden_layer // 10)
+    
+    # Step 4: Train VAE and compute correlations
     opt = tf.keras.optimizers.Adam(learning_rate=0.001, clipnorm=0.001)
     x_train = x_test = np.array(x)
+    
     vae = VAE(
-        opt, x_train, x_test, batch_size, original_dim, hidden_layer, latent_dim, epochs
+        opt, x_train, x_test, batch_size, 
+        original_dim, hidden_layer, latent_dim, epochs
     )
+    
     x_test_encoded = np.array(vae.encoder.predict(x_test, batch_size=batch_size))
     correlation = _create_protein_pairs(x_test_encoded, row_names, correlation_type)
-
+    
+    # Step 5: Filter and return results
     final_pairs = correlation[correlation.iloc[:, 0] != correlation.iloc[:, 1]]
     final_pairs = final_pairs.sort_values(by=["Score"], ascending=False)
-    final_pairs = _pairs_after_cutoff(
-        correlation=final_pairs,
-        interaction_count=interaction_count,
-        CC_cutoff=CC_cutoff,
-    )
-    return final_pairs
-
+    
+    return _pairs_after_cutoff(
+                CC_cutoff=CC_cutoff,
+                correlation=final_pairs, 
+                interaction_count=interaction_count
+            )
 
 def main():
     """
     Main function for preprocessing data, training VAE, and saving results.
-
-    This function loads data, applies preprocessing, trains a Variational Autoencoder (VAE),
-    calculates correlation scores between encoded latent spaces, filters protein pairs based
-    on correlation and cutoffs, and finally saves the results to a file.
+    
+    This function loads data from file, calls cook() to process it,
+    and saves the results.
     """
     args = argument_parser()
-
+    
+    # Load raw data from file
     x, row_names = _load_data(args.input_file, args.data_type)
-    original_dim = x.shape[1]
-
-    if args.hidden_layer is None:
-        if original_dim >= 2000:
-            args.hidden_layer = 1000
-        if original_dim > 500 and original_dim < 2000:
-            args.hidden_layer = 500
-        if original_dim <= 500:
-            args.hidden_layer = 50
-
-    if args.latent_dim is None:
-        if args.hidden_layer >= 1000:
-            args.latent_dim = 100
-        if args.hidden_layer >= 500 and args.hidden_layer < 1000:
-            args.latent_dim = 50
-        if args.hidden_layer <= 500:
-            args.latent_dim = 5
-
-    opt = tf.keras.optimizers.Adam(learning_rate=0.001, clipnorm=0.001)
-    x_train = x_test = np.array(x)
-    vae = VAE(
-        opt,
-        x_train,
-        x_test,
-        args.batch_size,
-        original_dim,
-        args.hidden_layer,
-        args.latent_dim,
-        args.epochs,
-    )
-    x_test_encoded = np.array(vae.encoder.predict(x_test, batch_size=args.batch_size))
-
-    logging.info(f" Calculating {args.correlation_type} correlation scores.")
-    correlation = _create_protein_pairs(
-        x_test_encoded, row_names, args.correlation_type
-    )
-
-    final_pairs = correlation[correlation.iloc[:, 0] != correlation.iloc[:, 1]]
-    final_pairs = final_pairs.sort_values(by=["Score"], ascending=False)
-    final_pairs = _pairs_after_cutoff(
-        correlation=final_pairs,
+    
+    # Convert to DataFrame for consistency with cook()
+    df = pd.DataFrame(x, index=row_names)
+    
+    # Process using cook() - handles all preprocessing, VAE training, and correlation
+    final_pairs = cook(
+        data=df,
+        log2_normalization=True,
+        hidden_layer=args.hidden_layer,
+        latent_dim=args.latent_dim,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
         interaction_count=args.interaction_count,
+        correlation_type=args.correlation_type,
         CC_cutoff=args.CC_cutoff,
     )
+    
+    # Round and save results
     final_pairs.Score = final_pairs.Score.astype(float).round(5)
     logging.warning(
         " If it is not the desired cut-off, please check again the value assigned to the related parameter (-n or interaction_count | -c or CC_cutoff)."
     )
-
     logging.info(" Saving the file with the interactions in the chosen directory ...")
-
-    # Save the file
     np.savetxt(args.output_file, final_pairs, fmt="%s")
     logging.info(
         f" Congratulations! A file is waiting for you here: {args.output_file}"
