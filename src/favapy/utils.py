@@ -5,6 +5,7 @@ import time
 import numpy as np
 import pandas as pd
 import anndata
+from scipy import stats
 
 
 def _preprocess_expression(x):
@@ -174,21 +175,30 @@ def _create_protein_pairs(x_test_encoded, row_names, correlation_type="pearson")
     start_time = time.time()
     
     # Reshape from (3, n_samples, latent_dim) to (n_samples, 3*latent_dim)
-    # This concatenates z_mean, z_log_sigma, and z horizontally
     n_outputs, n_samples, latent_dim = x_test_encoded.shape
-    x_concatenated = x_test_encoded.transpose(1, 0, 2).reshape(n_samples, -1)
-
-    # Correlation of the latent space: Pearson or Spearman
-    corr = pd.DataFrame(x_concatenated.T).corr(method=correlation_type)
-    corr.columns = corr.index = row_names
-
-    correlation_df = corr.stack().reset_index()
-
+    x_concat = x_test_encoded.transpose(1, 0, 2).reshape(n_samples, -1)
+    
+    # Compute correlation matrix using NumPy/SciPy (faster than pandas)
+    if correlation_type == "pearson":
+        corr_matrix = np.corrcoef(x_concat.T)
+    else:  # spearman
+        corr_matrix = stats.spearmanr(x_concat.T)[0]
+    
+    # Extract upper triangle only (avoids AB-BA duplicates and self-loops)
+    n_genes = len(row_names)
+    upper_idx = np.triu_indices(n_genes, k=1)
+    
+    # Create DataFrame directly from upper triangle
+    pairs_df = pd.DataFrame({
+        "Protein_1": [row_names[i] for i in upper_idx[0]],
+        "Protein_2": [row_names[j] for j in upper_idx[1]],
+        "Score": corr_matrix[upper_idx]
+    })
+    
     end_time = time.time()
-    total_time = end_time - start_time
-    logging.info(f"Total time taken: {total_time} seconds")
-    correlation_df.columns = ["Protein_1", "Protein_2", "Score"]
-    return correlation_df
+    logging.info(f"Total time taken: {end_time - start_time:.2f} seconds")
+    
+    return pairs_df
 
 
 def _pairs_after_cutoff(correlation, interaction_count=100000, CC_cutoff=None):

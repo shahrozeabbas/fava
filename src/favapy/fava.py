@@ -195,8 +195,7 @@ def cook(
     correlation = _create_protein_pairs(x_test_encoded, row_names, correlation_type)
     
     # Step 6: Filter and return results
-    final_pairs = correlation[correlation.iloc[:, 0] != correlation.iloc[:, 1]]
-    final_pairs = final_pairs.sort_values(by=["Score"], ascending=False)
+    final_pairs = correlation.sort_values(by=["Score"], ascending=False)
     
     return _pairs_after_cutoff(
                 CC_cutoff=CC_cutoff,
