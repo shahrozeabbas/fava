@@ -41,6 +41,12 @@ class VAE(tf.keras.Model):
         epochs,
     ):
         super(VAE, self).__init__()
+        
+        # Store parameters for use in train_step
+        self.original_dim = original_dim
+        self.latent_dim = latent_dim
+        
+        # Build encoder
         inputs = tf.keras.Input(shape=(original_dim,))
         h = layers.Dense(hidden_layer, activation="relu")(inputs)
 
@@ -58,44 +64,86 @@ class VAE(tf.keras.Model):
         z = layers.Lambda(sampling, output_shape=(latent_dim,))([z_mean, z_log_sigma])
 
         # Create encoder
-        encoder = tf.keras.Model(inputs, [z_mean, z_log_sigma, z], name="encoder")
-        self.encoder = encoder
+        self.encoder = tf.keras.Model(inputs, [z_mean, z_log_sigma, z], name="encoder")
+        
         # Create decoder
         latent_inputs = tf.keras.Input(shape=(latent_dim,), name="z_sampling")
         x = layers.Dense(hidden_layer, activation="relu")(latent_inputs)
-
         outputs = layers.Dense(original_dim, activation="sigmoid")(x)
-        decoder = tf.keras.Model(latent_inputs, outputs, name="decoder")
-        self.decoder = decoder
-
-        # instantiate VAE model
-        outputs = decoder(encoder(inputs)[2])
-        vae = tf.keras.Model(inputs, outputs, name="vae_mlp")
+        self.decoder = tf.keras.Model(latent_inputs, outputs, name="decoder")
         
-        # Define custom loss function (Keras 3.x compatible)
-        # z_mean and z_log_sigma are captured from the enclosing scope via closure
-        def vae_loss_function(y_true, y_pred):
-            """Custom VAE loss: 90% reconstruction + 10% KL divergence."""
-            # Reconstruction loss (MSE per sample)
-            reconstruction_loss = K.mean(K.square(y_true - y_pred), axis=-1)
-            reconstruction_loss *= original_dim
-            
-            # KL divergence loss per sample
-            kl_loss = 1 + z_log_sigma - K.square(z_mean) - K.exp(z_log_sigma)
-            kl_loss = K.sum(kl_loss, axis=-1)
-            kl_loss *= -0.5
-            
-            # Combined: 90% reconstruction + 10% KL
-            return 0.9 * reconstruction_loss + 0.1 * kl_loss
+        # Compile model (loss is computed in train_step)
+        self.compile(optimizer=opt, metrics=["mse"])
         
-        # Compile with custom loss function
-        vae.compile(optimizer=opt, loss=vae_loss_function, metrics=["mse"])
-        
-        vae.fit(
+        # Train the model
+        self.fit(
             x_train,
             x_train,
             epochs=epochs,
             batch_size=batch_size,
             validation_data=(x_test, x_test),
         )
+    
+    def call(self, inputs):
+        """Forward pass through the VAE."""
+        z_mean, z_log_sigma, z = self.encoder(inputs)
+        reconstructed = self.decoder(z)
+        return reconstructed
+    
+    def train_step(self, data):
+        """Custom training step with VAE loss."""
+        x, _ = data  # Unpack data
+        
+        with tf.GradientTape() as tape:
+            # Forward pass
+            z_mean, z_log_sigma, z = self.encoder(x)
+            reconstructed = self.decoder(z)
+            
+            # Reconstruction loss (MSE per sample)
+            reconstruction_loss = K.mean(K.square(x - reconstructed), axis=-1)
+            reconstruction_loss *= self.original_dim
+            
+            # KL divergence loss per sample
+            kl_loss = 1 + z_log_sigma - K.square(z_mean) - K.exp(z_log_sigma)
+            kl_loss = K.sum(kl_loss, axis=-1)
+            kl_loss *= -0.5
+            
+            # Total loss: 90% reconstruction + 10% KL
+            total_loss = K.mean(0.9 * reconstruction_loss + 0.1 * kl_loss)
+        
+        # Compute gradients and update weights
+        grads = tape.gradient(total_loss, self.trainable_weights)
+        self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
+        
+        # Update metrics
+        self.compiled_metrics.update_state(x, reconstructed)
+        
+        # Return metrics
+        return {m.name: m.result() for m in self.metrics}
+    
+    def test_step(self, data):
+        """Custom validation step with VAE loss."""
+        x, _ = data  # Unpack data
+        
+        # Forward pass (no GradientTape needed - we're not training)
+        z_mean, z_log_sigma, z = self.encoder(x)
+        reconstructed = self.decoder(z)
+        
+        # Reconstruction loss (MSE per sample)
+        reconstruction_loss = K.mean(K.square(x - reconstructed), axis=-1)
+        reconstruction_loss *= self.original_dim
+        
+        # KL divergence loss per sample
+        kl_loss = 1 + z_log_sigma - K.square(z_mean) - K.exp(z_log_sigma)
+        kl_loss = K.sum(kl_loss, axis=-1)
+        kl_loss *= -0.5
+        
+        # Total loss: 90% reconstruction + 10% KL
+        total_loss = K.mean(0.9 * reconstruction_loss + 0.1 * kl_loss)
+        
+        # Update metrics
+        self.compiled_metrics.update_state(x, reconstructed)
+        
+        # Return metrics
+        return {m.name: m.result() for m in self.metrics}
 
