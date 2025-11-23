@@ -68,20 +68,35 @@ class VAE(tf.keras.Model):
         decoder = tf.keras.Model(latent_inputs, outputs, name="decoder")
         self.decoder = decoder
 
-        # instantiate VAE model
+        # instantiate VAE model with custom loss
         outputs = decoder(encoder(inputs)[2])
+        
+        # Convert original_dim to a constant tensor for use in Lambda layer
+        original_dim_tensor = K.constant(original_dim, dtype='float32')
+        
+        # Define custom loss function inside Lambda layer
+        def vae_loss_fn(args):
+            inputs_t, outputs_t, z_mean_t, z_log_sigma_t, orig_dim = args
+            # Reconstruction loss
+            recon_loss = K.mean(K.square(inputs_t - outputs_t), axis=-1) * orig_dim
+            # KL divergence loss
+            kl = K.sum(1 + z_log_sigma_t - K.square(z_mean_t) - K.exp(z_log_sigma_t), axis=-1) * -0.5
+            # Combined: 90% reconstruction + 10% KL
+            return K.mean(0.9 * recon_loss + 0.1 * kl)
+        
+        # Wrap loss computation in Lambda layer
+        vae_loss = layers.Lambda(
+            vae_loss_fn,
+            output_shape=(1,),
+            name='vae_loss'
+        )([inputs, outputs, z_mean, z_log_sigma, original_dim_tensor])
+        
+        # Create model and add custom loss
         vae = tf.keras.Model(inputs, outputs, name="vae_mlp")
-
-        # loss
-        reconstruction_loss = K.mean(K.square(inputs - outputs), axis=-1)
-        reconstruction_loss *= original_dim
-        kl_loss = 1 + z_log_sigma - K.square(z_mean) - K.exp(z_log_sigma)
-        kl_loss = K.sum(kl_loss, axis=-1)
-        kl_loss *= -0.5
-        vae_loss = K.mean(0.9 * (reconstruction_loss) + 0.1 * (kl_loss))
         vae.add_loss(vae_loss)
-
-        vae.compile(optimizer=opt, loss="mean_squared_error", metrics=["accuracy"])
+        
+        # Compile without specifying loss (custom loss already added)
+        vae.compile(optimizer=opt, metrics=["mse"])
         
         vae.fit(
             x_train,
