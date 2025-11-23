@@ -15,7 +15,6 @@ from .utils import (
     _extract_data,
     _load_data,
     _create_protein_pairs,
-    _pairs_after_cutoff,
 )
 
 
@@ -192,16 +191,16 @@ def cook(
     encoder_outputs = vae.encoder.predict(x_test, batch_size=batch_size)
     x_test_encoded = np.stack(encoder_outputs, axis=0)
     
-    correlation = _create_protein_pairs(x_test_encoded, row_names, correlation_type)
+    # Step 6: Create and filter protein pairs
+    final_pairs = _create_protein_pairs(
+        x_test_encoded, 
+        row_names, 
+        correlation_type,
+        interaction_count=interaction_count,
+        CC_cutoff=CC_cutoff
+    )
     
-    # Step 6: Filter and return results
-    final_pairs = correlation.sort_values(by=["Score"], ascending=False)
-    
-    return _pairs_after_cutoff(
-                CC_cutoff=CC_cutoff,
-                correlation=final_pairs, 
-                interaction_count=interaction_count
-            )
+    return final_pairs
 
 def main():
     """

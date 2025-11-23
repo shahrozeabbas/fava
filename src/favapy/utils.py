@@ -147,7 +147,8 @@ def _extract_data(data, layer=None):
     return x, row_names
 
 
-def _create_protein_pairs(x_test_encoded, row_names, correlation_type="pearson"):
+def _create_protein_pairs(x_test_encoded, row_names, correlation_type="pearson",
+                          interaction_count=100000, CC_cutoff=None):
     """
     Create pairs of proteins based on their encoded latent spaces.
 
@@ -166,11 +167,16 @@ def _create_protein_pairs(x_test_encoded, row_names, correlation_type="pearson")
         List of row names corresponding to the data.
     correlation_type : str
         Type of correlation to use (Pearson or Spearman).
+    interaction_count : int, optional
+        Maximum number of interactions to include, by default 100000.
+    CC_cutoff : float, optional
+        Correlation Coefficient cutoff, by default None.
 
     Returns
     -------
-    correlation_df : pd.DataFrame
-        DataFrame containing protein pairs and correlation scores.
+    pairs_df : pd.DataFrame
+        DataFrame containing filtered protein pairs and correlation scores,
+        sorted by score descending.
     """
     start_time = time.time()
     
@@ -189,48 +195,43 @@ def _create_protein_pairs(x_test_encoded, row_names, correlation_type="pearson")
     # Extract upper triangle only (avoids AB-BA duplicates and self-loops)
     n_genes = len(row_names)
     upper_idx = np.triu_indices(n_genes, k=1)
+    scores = corr_matrix[upper_idx]
     
-    # Create DataFrame directly from upper triangle
+    # Sort once by score descending
+    sort_idx = np.argsort(scores)[::-1]
+    sorted_i = upper_idx[0][sort_idx]
+    sorted_j = upper_idx[1][sort_idx]
+    sorted_scores = scores[sort_idx]
+    
+    # Filter by cutoff or top N before creating DataFrame
+    if CC_cutoff is not None and isinstance(CC_cutoff, (int, float)):
+        # Filter by correlation cutoff (scores already sorted descending)
+        logging.info(f" A cut-off of {CC_cutoff} is applied.")
+        mask = sorted_scores >= CC_cutoff
+        filtered_i = sorted_i[mask]
+        filtered_j = sorted_j[mask]
+        filtered_scores = sorted_scores[mask]
+    elif interaction_count is not None:
+        # Get top N by score (already sorted)
+        top_n = min(interaction_count, len(sorted_scores))
+        filtered_i = sorted_i[:top_n]
+        filtered_j = sorted_j[:top_n]
+        filtered_scores = sorted_scores[:top_n]
+        logging.warning(f" The number of interactions in the output file is {len(filtered_scores)}.")
+    else:
+        # No filtering, return all pairs (already sorted)
+        filtered_i = sorted_i
+        filtered_j = sorted_j
+        filtered_scores = sorted_scores
+    
+    # Create DataFrame only for filtered pairs
     pairs_df = pd.DataFrame({
-        "Protein_1": [row_names[i] for i in upper_idx[0]],
-        "Protein_2": [row_names[j] for j in upper_idx[1]],
-        "Score": corr_matrix[upper_idx]
+        "Protein_1": [row_names[i] for i in filtered_i],
+        "Protein_2": [row_names[j] for j in filtered_j],
+        "Score": filtered_scores
     })
     
     end_time = time.time()
     logging.info(f"Total time taken: {end_time - start_time:.2f} seconds")
     
     return pairs_df
-
-
-def _pairs_after_cutoff(correlation, interaction_count=100000, CC_cutoff=None):
-    """
-    Filter protein pairs based on correlation scores and cutoffs.
-
-    Parameters
-    ----------
-    correlation : pd.DataFrame
-        DataFrame containing protein pairs and correlation scores.
-    interaction_count : int, optional
-        Maximum number of interactions to include, by default 100000.
-    CC_cutoff : float, optional
-        Correlation Coefficient cutoff, by default None.
-
-    Returns
-    -------
-    correlation_df_new : pd.DataFrame
-        Filtered DataFrame with selected protein pairs.
-    """
-    # Apply cutoff or count filter
-    if CC_cutoff is not None and isinstance(CC_cutoff, (int, float)):
-        logging.info(f" A cut-off of {CC_cutoff} is applied.")
-        correlation_df_new = correlation.loc[(correlation["Score"] >= CC_cutoff)]
-    else:
-        correlation_df_new = correlation.iloc[:interaction_count, :]
-        logging.warning(
-            f" The number of interactions in the output file is {interaction_count}."
-        )
-    
-    # Reset index to sequential 0, 1, 2, ...
-    return correlation_df_new.reset_index(drop=True)
-
