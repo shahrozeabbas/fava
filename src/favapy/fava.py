@@ -179,24 +179,13 @@ def cook(
     )
     
     encoder_outputs = vae.encoder.predict(x_test, batch_size=batch_size)
-    print(f"DEBUG: encoder_outputs type: {type(encoder_outputs)}")
-    print(f"DEBUG: Number of outputs: {len(encoder_outputs)}")
-    print(f"DEBUG: Output shapes: {[out.shape for out in encoder_outputs]}")
-    print(f"DEBUG: x_test shape: {x_test.shape}")
-    print(f"DEBUG: row_names length: {len(row_names)}")
-    
-    x_test_encoded = np.stack(encoder_outputs, axis=0)  # More explicit than np.array()
-    print(f"DEBUG: x_test_encoded shape: {x_test_encoded.shape}")
+    x_test_encoded = np.stack(encoder_outputs, axis=0)
     
     correlation = _create_protein_pairs(x_test_encoded, row_names, correlation_type)
-    print(f"DEBUG: correlation shape: {correlation.shape}")
-    print(f"DEBUG: correlation head:\n{correlation.head()}")
     
     # Step 5: Filter and return results
     final_pairs = correlation[correlation.iloc[:, 0] != correlation.iloc[:, 1]]
     final_pairs = final_pairs.sort_values(by=["Score"], ascending=False)
-    print(f"DEBUG: final_pairs shape after filtering: {final_pairs.shape}")
-    print(f"DEBUG: final_pairs head:\n{final_pairs.head()}")
     
     return _pairs_after_cutoff(
                 CC_cutoff=CC_cutoff,
