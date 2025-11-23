@@ -1,6 +1,7 @@
 import logging
 import argparse
 import warnings
+import random
 
 warnings.filterwarnings("ignore")
 
@@ -104,6 +105,7 @@ def cook(
     correlation_type="pearson",
     CC_cutoff=None,
     layer=None,
+    random_seed=None,
 ):
     """
     Preprocess data, train a Variational Autoencoder (VAE), and create filtered protein pairs.
@@ -132,6 +134,9 @@ def cook(
         Correlation Coefficient cutoff, by default None.
     layer : str, optional
         For AnnData input, which layer to use. If None, uses X (default layer).
+    random_seed : int, optional
+        Random seed for reproducibility. If provided, sets seeds for Python's random,
+        NumPy, and TensorFlow. If None, results will vary between runs, by default None.
 
     Returns
     -------
@@ -143,14 +148,20 @@ def cook(
     ValueError
         If input type is not supported or data dimensions are invalid.
     """
-    # Step 1: Extract matrix and gene names from input
+    # Step 1: Set random seeds for reproducibility if provided
+    if random_seed is not None:
+        random.seed(random_seed)
+        np.random.seed(random_seed)
+        tf.random.set_seed(random_seed)
+    
+    # Step 2: Extract matrix and gene names from input
     x, row_names = _extract_data(data, layer=layer)
     
-    # Step 2: Apply preprocessing if enabled
+    # Step 3: Apply preprocessing if enabled
     if log2_normalization:
         x = _preprocess_expression(x)
     
-    # Step 3: Determine architecture dimensions
+    # Step 4: Determine architecture dimensions
     original_dim = x.shape[1]
     
     if hidden_layer is None:
@@ -169,7 +180,7 @@ def cook(
         else:
             latent_dim = max(5, hidden_layer // 10)
     
-    # Step 4: Train VAE and compute correlations
+    # Step 5: Train VAE and compute correlations
     opt = tf.keras.optimizers.Adam(learning_rate=0.001, clipnorm=0.001)
     x_train = x_test = np.array(x)
     
@@ -183,7 +194,7 @@ def cook(
     
     correlation = _create_protein_pairs(x_test_encoded, row_names, correlation_type)
     
-    # Step 5: Filter and return results
+    # Step 6: Filter and return results
     final_pairs = correlation[correlation.iloc[:, 0] != correlation.iloc[:, 1]]
     final_pairs = final_pairs.sort_values(by=["Score"], ascending=False)
     
