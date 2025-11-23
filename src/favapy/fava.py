@@ -4,7 +4,6 @@ import warnings
 
 warnings.filterwarnings("ignore")
 
-import os
 import anndata
 import tensorflow as tf
 import keras
@@ -19,7 +18,8 @@ config.intra_op_parallelism_threads = 1
 config.inter_op_parallelism_threads = 1
 tf.compat.v1.Session(config=config)
 
-logger = logging.getLogger().setLevel(logging.INFO)
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 
 def custom_formatwarning(msg, *args, **kwargs):
@@ -124,11 +124,10 @@ def _load_data(input_file, data_type):
     if np.all(expr >= 0):
         expr = np.log2(1 + expr[:])
     else:
-        logging.warn(
+        logging.warning(
             " Negative values are detected, so log2 normalization is not applied."
         )
 
-    # expr = expr / np.max(expr, axis=1, keepdims=True)
     constant = 1e-8  # small constant to avoid division by zero
     expr = (expr - np.min(expr, axis=1, keepdims=True)) / (
         np.max(expr, axis=1, keepdims=True)
@@ -189,7 +188,6 @@ class VAE(keras.Model):
             )
             return z_mean + K.exp(z_log_sigma) * epsilon
 
-        # z = layers.Lambda(sampling)([z_mean, z_log_sigma])
         z = layers.Lambda(sampling, output_shape=(latent_dim,))([z_mean, z_log_sigma])
 
         # Create encoder
@@ -197,7 +195,7 @@ class VAE(keras.Model):
         self.encoder = encoder
         # Create decoder
         latent_inputs = keras.Input(shape=(latent_dim,), name="z_sampling")
-        x = layers.Dense(hidden_layer, activation="relu")(latent_inputs)  # relu
+        x = layers.Dense(hidden_layer, activation="relu")(latent_inputs)
 
         outputs = layers.Dense(original_dim, activation="sigmoid")(x)
         decoder = keras.Model(latent_inputs, outputs, name="decoder")
@@ -350,7 +348,7 @@ def _create_protein_pairs(x_test_encoded, row_names, correlation_type="pearson")
 
     end_time = time.time()
     total_time = end_time - start_time
-    print(f"Total time taken OLD: {total_time} seconds")
+    logging.info(f"Total time taken: {total_time} seconds")
     correlation_df.columns = ["Protein_1", "Protein_2", "Score"]
     return correlation_df
 
@@ -374,14 +372,12 @@ def _pairs_after_cutoff(correlation, interaction_count=100000, CC_cutoff=None):
         Filtered DataFrame with selected protein pairs.
     """
     if CC_cutoff is not None and isinstance(CC_cutoff, (int, float)):
-        logging.info(" A cut-off of " + str(CC_cutoff) + " is applied.")
+        logging.info(f" A cut-off of {CC_cutoff} is applied.")
         correlation_df_new = correlation.loc[(correlation["Score"] >= CC_cutoff)]
     else:
         correlation_df_new = correlation.iloc[:interaction_count, :]
-        logging.warn(
-            " The number of interactions in the output file is "
-            + str(interaction_count)
-            + " in which both directions are included: proteinA - proteinB and proteinB - proteinA."
+        logging.warning(
+            f" The number of interactions in the output file is {interaction_count} in which both directions are included: proteinA - proteinB and proteinB - proteinA."
         )
     return correlation_df_new
 
@@ -426,10 +422,7 @@ def cook(
     final_pairs : pd.DataFrame
         Filtered protein pairs based on correlation and cutoffs.
     """
-    from scipy.sparse import issparse
-
-    if type(data) == anndata._core.anndata.AnnData:
-        # if issparse(data.X):
+    if isinstance(data, anndata.AnnData):
         data.X = data.X.toarray()
         data.var.index.name = None
         x = data.X.T
@@ -440,19 +433,19 @@ def cook(
 
     if np.any(x < 0):
         log2_normalization = False
-        logging.warn(
+        logging.warning(
             " Negative values are detected or log2_normalization was set to False, so log2 normalization is not applied."
         )
 
-    if log2_normalization == True:
+    if log2_normalization:
         x = np.log2(1 + x[:])
-        logging.warn(" log2 normalization is applied.")
+        logging.warning(" log2 normalization is applied.")
 
     x = x / np.max(x, axis=1, keepdims=True)
     x = np.nan_to_num(x)
 
     original_dim = x.shape[1]
-    if hidden_layer == None:
+    if hidden_layer is None:
         if original_dim >= 2000:
             hidden_layer = 1000
         if original_dim > 500 and original_dim < 2000:
@@ -460,7 +453,7 @@ def cook(
         if original_dim <= 500:
             hidden_layer = 50
 
-    if latent_dim == None:
+    if latent_dim is None:
         if hidden_layer >= 1000:
             latent_dim = 100
         if hidden_layer >= 500 and hidden_layer < 1000:
@@ -475,7 +468,6 @@ def cook(
     )
     x_test_encoded = np.array(vae.encoder.predict(x_test, batch_size=batch_size))
     correlation = _create_protein_pairs(x_test_encoded, row_names, correlation_type)
-    # correlation = _create_protein_pairs_parallel(x_test_encoded, row_names, correlation_type, num_processes=6)
 
     final_pairs = correlation[correlation.iloc[:, 0] != correlation.iloc[:, 1]]
     final_pairs = final_pairs.sort_values(by=["Score"], ascending=False)
@@ -500,7 +492,7 @@ def main():
     x, row_names = _load_data(args.input_file, args.data_type)
     original_dim = x.shape[1]
 
-    if args.hidden_layer == None:
+    if args.hidden_layer is None:
         if original_dim >= 2000:
             args.hidden_layer = 1000
         if original_dim > 500 and original_dim < 2000:
@@ -508,7 +500,7 @@ def main():
         if original_dim <= 500:
             args.hidden_layer = 50
 
-    if args.latent_dim == None:
+    if args.latent_dim is None:
         if args.hidden_layer >= 1000:
             args.latent_dim = 100
         if args.hidden_layer >= 500 and args.hidden_layer < 1000:
@@ -543,7 +535,7 @@ def main():
         CC_cutoff=args.CC_cutoff,
     )
     final_pairs.Score = final_pairs.Score.astype(float).round(5)
-    logging.warn(
+    logging.warning(
         " If it is not the desired cut-off, please check again the value assigned to the related parameter (-n or interaction_count | -c or CC_cutoff)."
     )
 
@@ -552,7 +544,7 @@ def main():
     # Save the file
     np.savetxt(args.output_file, final_pairs, fmt="%s")
     logging.info(
-        " Congratulations! A file is waiting for you here: " + args.output_file
+        f" Congratulations! A file is waiting for you here: {args.output_file}"
     )
 
 
