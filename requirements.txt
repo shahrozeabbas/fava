@@ -1,0 +1,6 @@
+tensorflow>=2
+numpy<2.0
+pandas
+anndata
+scipy
+
