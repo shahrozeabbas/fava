@@ -88,6 +88,13 @@ def argument_parser():
         choices=["pearson", "spearman"],
         help="Type of correlation to use (Pearson or Spearman).",
     )
+    parser.add_argument(
+        "--no-log2",
+        dest="log2_normalization",
+        action="store_false",
+        default=True,
+        help="Disable log2 normalization and min-max scaling.",
+    )
 
     args = parser.parse_args()
     return args
@@ -220,7 +227,7 @@ def main():
     # Process using cook() - handles all preprocessing, VAE training, and correlation
     final_pairs = cook(
         data=df,
-        log2_normalization=True,
+        log2_normalization=args.log2_normalization,
         hidden_layer=args.hidden_layer,
         latent_dim=args.latent_dim,
         epochs=args.epochs,
