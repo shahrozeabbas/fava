@@ -109,7 +109,7 @@ def cook(
     latent_dim: Optional[int] = None,
     epochs: int = 50,
     batch_size: int = 32,
-    interaction_count: int = 100000,
+    interaction_count: Optional[int] = 100000,
     correlation_type: str = 'pearson',
     CC_cutoff: Optional[float] = None,
     layer: Optional[str] = None,
@@ -134,7 +134,8 @@ def cook(
     batch_size : int, optional
         Batch size for training, by default 32.
     interaction_count : int, optional
-        Maximum number of interactions to include, by default 100000.
+        Maximum number of interactions to include. If None, returns all pairs.
+        By default 100000.
     correlation_type : str, optional
         Type of correlation to use ('pearson' or 'spearman'), by default 'pearson'.
     CC_cutoff : float, optional
