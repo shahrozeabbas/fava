@@ -12,6 +12,16 @@ import anndata
 from scipy import stats
 
 
+def _top_k_sorted_indices(arr: np.ndarray, k: int) -> np.ndarray:
+    """Return indices of top k values, sorted descending."""
+    if k <= 0:
+        return np.array([], dtype=np.intp)
+    if k >= len(arr):
+        return np.argsort(arr)[::-1]
+    top = np.argpartition(arr, -k)[-k:]
+    return top[np.argsort(arr[top])[::-1]]
+
+
 def _preprocess_expression(x: np.ndarray) -> np.ndarray:
     """
     Apply log2 transformation and min-max normalization to expression data.
@@ -201,32 +211,23 @@ def _create_protein_pairs(
     upper_idx = np.triu_indices(n_genes, k=1)
     scores = corr_matrix[upper_idx]
     
-    # Sort once by score descending
-    sort_idx = np.argsort(scores)[::-1]
-    sorted_i = upper_idx[0][sort_idx]
-    sorted_j = upper_idx[1][sort_idx]
-    sorted_scores = scores[sort_idx]
-    
-    # Filter by cutoff or top N before creating DataFrame
-    if CC_cutoff is not None and isinstance(CC_cutoff, (int, float)):
-        # Filter by correlation cutoff (scores already sorted descending)
-        logging.info(f" A cut-off of {CC_cutoff} is applied.")
-        mask = sorted_scores >= CC_cutoff
-        filtered_i = sorted_i[mask]
-        filtered_j = sorted_j[mask]
-        filtered_scores = sorted_scores[mask]
-    elif interaction_count is not None:
-        # Get top N by score (already sorted)
-        top_n = min(interaction_count, len(sorted_scores))
-        filtered_i = sorted_i[:top_n]
-        filtered_j = sorted_j[:top_n]
-        filtered_scores = sorted_scores[:top_n]
-        logging.warning(f" The number of interactions in the output file is {len(filtered_scores)}.")
+    # Get sorted indices of pairs to keep
+    if CC_cutoff is not None:
+        logging.info(f' A cut-off of {CC_cutoff} is applied.')
+        mask = scores >= CC_cutoff
+        valid = np.where(mask)[0]
+        sorted_idx = valid[np.argsort(scores[valid])[::-1]]
     else:
-        # No filtering, return all pairs (already sorted)
-        filtered_i = sorted_i
-        filtered_j = sorted_j
-        filtered_scores = sorted_scores
+        if interaction_count is not None:
+            k = min(interaction_count, len(scores))
+            logging.warning(f' The number of interactions in the output file is {k}.')
+        else:
+            k = len(scores)
+        sorted_idx = _top_k_sorted_indices(scores, k)
+    
+    filtered_i = upper_idx[0][sorted_idx]
+    filtered_j = upper_idx[1][sorted_idx]
+    filtered_scores = scores[sorted_idx]
     
     # Create DataFrame only for filtered pairs
     pairs_df = pd.DataFrame({
