@@ -5,7 +5,7 @@ import argparse
 import warnings
 from typing import Optional, Union
 
-warnings.filterwarnings('ignore')
+warnings.filterwarnings("ignore")
 
 import tensorflow as tf
 import numpy as np
@@ -110,7 +110,7 @@ def cook(
     epochs: int = 50,
     batch_size: int = 32,
     interaction_count: Optional[int] = 100000,
-    correlation_type: str = 'pearson',
+    correlation_type: str = "pearson",
     CC_cutoff: Optional[float] = None,
     layer: Optional[str] = None,
 ) -> pd.DataFrame:
@@ -147,7 +147,7 @@ def cook(
     -------
     final_pairs : pd.DataFrame
         Filtered protein pairs based on correlation and cutoffs.
-    
+
     Raises
     ------
     ValueError
@@ -155,14 +155,14 @@ def cook(
     """
     # Step 1: Extract matrix and gene names from input
     x, row_names = _extract_data(data, layer=layer)
-    
+
     # Step 2: Apply preprocessing if enabled
     if log2_normalization:
         x = _preprocess_expression(x)
-    
+
     # Step 3: Determine architecture dimensions
     original_dim = x.shape[1]
-    
+
     if hidden_layer is None:
         if original_dim >= 2000:
             hidden_layer = 1000
@@ -170,7 +170,7 @@ def cook(
             hidden_layer = 500
         else:
             hidden_layer = max(50, original_dim // 2)
-    
+
     if latent_dim is None:
         if hidden_layer >= 1000:
             latent_dim = 100
@@ -178,45 +178,45 @@ def cook(
             latent_dim = 50
         else:
             latent_dim = max(5, hidden_layer // 10)
-    
+
     # Step 4: Train VAE and compute correlations
     opt = tf.keras.optimizers.Adam(learning_rate=0.001, clipnorm=0.001)
     x_train = x_test = np.array(x)
-    
+
     vae = VAE(
-        opt, x_train, x_test, batch_size, 
-        original_dim, hidden_layer, latent_dim, epochs
+        opt, x_train, x_test, batch_size, original_dim, hidden_layer, latent_dim, epochs
     )
-    
+
     encoder_outputs = vae.encoder.predict(x_test, batch_size=batch_size)
     x_test_encoded = np.stack(encoder_outputs, axis=0)
-    
+
     # Step 5: Create and filter protein pairs
     final_pairs = _create_protein_pairs(
-        x_test_encoded, 
-        row_names, 
+        x_test_encoded,
+        row_names,
         correlation_type,
         interaction_count=interaction_count,
-        CC_cutoff=CC_cutoff
+        CC_cutoff=CC_cutoff,
     )
-    
+
     return final_pairs
+
 
 def main():
     """
     Main function for preprocessing data, training VAE, and saving results.
-    
+
     This function loads data from file, calls cook() to process it,
     and saves the results.
     """
     args = argument_parser()
-    
+
     # Load raw data from file
     x, row_names = _load_data(args.input_file, args.data_type)
-    
+
     # Convert to DataFrame for consistency with cook()
     df = pd.DataFrame(x, index=row_names)
-    
+
     # Process using cook() - handles all preprocessing, VAE training, and correlation
     final_pairs = cook(
         data=df,
@@ -229,7 +229,7 @@ def main():
         correlation_type=args.correlation_type,
         CC_cutoff=args.CC_cutoff,
     )
-    
+
     # Round and save results
     final_pairs.Score = final_pairs.Score.astype(float).round(5)
     logging.warning(
